@@ -27,9 +27,9 @@ services:
       - mysql
     volumes:
       - ./webapp:/home/isucon/webapp
-      - tenant_db:/home/isucon/webapp/tenant_db
-      - initial_data:/home/isucon/initial_data
-      - gopkg:/home/isucon/go/pkg
+      - ./tenant_db:/home/isucon/webapp/tenant_db
+      - ./initial_data:/home/isucon/initial_data
+      - ./gopkg:/home/isucon/go/pkg
     init: true
     restart: always
 
@@ -40,7 +40,7 @@ services:
       - "MYSQL_ROOT_PASSWORD=root"
     volumes:
       - ./webapp/sql/admin/:/docker-entrypoint-initdb.d
-      - mysql:/var/lib/mysql
+      - ./mysql:/var/lib/mysql
     ports:
       - 13306:3306
     restart: always
@@ -67,9 +67,9 @@ services:
       ISUCON_JWT_KEY_FILE: ./isuports.pem
     volumes:
       - .:/home/isucon
-      - tenant_db:/home/isucon/webapp/tenant_db
-      - initial_data:/home/isucon/initial_data
-      - gopkg:/home/isucon/go/pkg
+      - ./tenant_db:/home/isucon/webapp/tenant_db
+      - ./initial_data:/home/isucon/initial_data
+      - ./gopkg:/home/isucon/go/pkg
     network_mode: host
     working_dir: /home/isucon/bench
     command:
