@@ -1,0 +1,3 @@
+[submodule "isulog"]
+	path = isulog
+	url = git@github.com:plainbanana/isucon-tools.git
