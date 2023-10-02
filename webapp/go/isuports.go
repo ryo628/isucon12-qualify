@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	echopprof "github.com/plainbanana/echo-pprof"
 	"io"
 	"net/http"
 	"os"
@@ -136,6 +137,8 @@ func Run() {
 	e := echo.New()
 	e.Debug = true
 	e.Logger.SetLevel(log.DEBUG)
+
+	echopprof.Wrap(e)
 
 	var (
 		sqlLogger io.Closer
