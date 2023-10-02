@@ -41,6 +41,7 @@ services:
     volumes:
       - ./webapp/sql/admin/:/docker-entrypoint-initdb.d
       - ./mysql:/var/lib/mysql
+      - ./webapp/sql/conf/my.cnf:/etc/my.cnf
     ports:
       - 13306:3306
     restart: always
