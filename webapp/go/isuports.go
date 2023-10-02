@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"github.com/patrickmn/go-cache"
 	echopprof "github.com/plainbanana/echo-pprof"
 	"io"
 	"net/http"
@@ -50,6 +51,8 @@ var (
 	sqliteDriverName = "sqlite3"
 
 	uniqueID int64
+
+	gocache *cache.Cache
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -121,6 +124,10 @@ func Run() {
 	e.Logger.SetLevel(log.DEBUG)
 
 	echopprof.Wrap(e)
+
+	// Create a cache with a default expiration time of 5 minutes, and which
+	// purges expired items every 10 minutes
+	gocache = cache.New(5*time.Minute, 10*time.Minute)
 
 	var (
 		sqlLogger io.Closer
@@ -1282,6 +1289,47 @@ type CompetitionRankingHandlerResult struct {
 	Ranks       []CompetitionRank `json:"ranks"`
 }
 
+func makeVisitHistoryKey(keys []string) string {
+	return strings.Join(keys, ":")
+}
+
+func init_visit_history() {
+	// select player_id, tenant_id, competition_id, min(created_at) as min_created_at
+	// 	from visit_history
+	// 	where created_at < '1654041600'
+	// 	group by player_id, tenant_id, competition_id
+	f, err := os.Open("select_player_id__tenant_id__competition.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	r := csv.NewReader(f)
+
+	for {
+		record, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		keys := []string{record[0], record[1], record[2]}
+		// keyが存在するかどうかを格納しておく
+		gocache.Set(makeVisitHistoryKey(keys), "1", cache.NoExpiration)
+	}
+}
+
+func shouldUpdateVisitHistory(playerID string, tenantId string, competitionID string) bool {
+	key := makeVisitHistoryKey([]string{playerID, tenantId, competitionID})
+
+	if _, found := gocache.Get(key); found {
+		return false
+	} else {
+		gocache.Set(key, "1", cache.NoExpiration)
+		return true
+	}
+}
+
 // 参加者向けAPI
 // GET /api/player/competition/:competition_id/ranking
 // 大会ごとのランキングを取得する
@@ -1325,15 +1373,17 @@ func competitionRankingHandler(c echo.Context) error {
 		return fmt.Errorf("error Select tenant: id=%d, %w", v.tenantID, err)
 	}
 
-	if _, err := adminDB.ExecContext(
-		ctx,
-		"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-		v.playerID, tenant.ID, competitionID, now, now,
-	); err != nil {
-		return fmt.Errorf(
-			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
-			v.playerID, tenant.ID, competitionID, now, now, err,
-		)
+	if shouldUpdateVisitHistory(v.playerID, strconv.FormatInt(tenant.ID, 10), competitionID) {
+		if _, err := adminDB.ExecContext(
+			ctx,
+			"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+			v.playerID, tenant.ID, competitionID, now, now,
+		); err != nil {
+			return fmt.Errorf(
+				"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
+				v.playerID, tenant.ID, competitionID, now, now, err,
+			)
+		}
 	}
 
 	var rankAfter int64
@@ -1601,5 +1651,6 @@ func initializeHandler(c echo.Context) error {
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
+	init_visit_history()
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }
