@@ -53,7 +53,7 @@ var (
 
 	uniqueID int64
 
-	gocache *cache.Cache
+	visitHistoryInserted *cache.Cache
 
 	mapTenantLock sync.Map
 )
@@ -1330,17 +1330,17 @@ func init_visit_history() {
 		}
 		keys := []string{record[0], record[1], record[2]}
 		// keyが存在するかどうかを格納しておく
-		gocache.Set(makeVisitHistoryKey(keys), "1", cache.NoExpiration)
+		visitHistoryInserted.Set(makeVisitHistoryKey(keys), "1", cache.NoExpiration)
 	}
 }
 
 func shouldUpdateVisitHistory(playerID string, tenantId string, competitionID string) bool {
 	key := makeVisitHistoryKey([]string{playerID, tenantId, competitionID})
 
-	if _, found := gocache.Get(key); found {
+	if _, found := visitHistoryInserted.Get(key); found {
 		return false
 	} else {
-		gocache.Set(key, "1", cache.NoExpiration)
+		visitHistoryInserted.Set(key, "1", cache.NoExpiration)
 		return true
 	}
 }
@@ -1664,7 +1664,7 @@ func initializeHandler(c echo.Context) error {
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
-	gocache = cache.New(5*time.Minute, 10*time.Minute)
+	visitHistoryInserted = cache.New(5*time.Minute, 10*time.Minute)
 	init_visit_history()
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }
