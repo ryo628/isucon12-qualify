@@ -1255,13 +1255,13 @@ func playerHandler(c echo.Context) error {
 	}
 
 	psds := make([]PlayerScoreDetail, 0, len(pss))
+	compTitleMap := map[string]string{}
+	for _, v := range cs {
+		compTitleMap[v.ID] = v.Title
+	}
 	for _, ps := range pss {
-		comp, err := retrieveCompetition(ctx, tenantDB, ps.CompetitionID)
-		if err != nil {
-			return fmt.Errorf("error retrieveCompetition: %w", err)
-		}
 		psds = append(psds, PlayerScoreDetail{
-			CompetitionTitle: comp.Title,
+			CompetitionTitle: compTitleMap[ps.CompetitionID],
 			Score:            ps.Score,
 		})
 	}
