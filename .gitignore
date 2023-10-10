@@ -1,3 +1,4 @@
 initial_data.tar.gz
 .vscode
 go/
+.docker/*
