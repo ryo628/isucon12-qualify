@@ -1093,18 +1093,32 @@ func competitionScoreHandler(c echo.Context) error {
 	); err != nil {
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
-	for _, ps := range playerScoreRows {
-		if _, err := tenantDB.NamedExecContext(
-			ctx,
-			"INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
-			ps,
-		); err != nil {
-			return fmt.Errorf(
-				"error Insert player_score: id=%s, tenant_id=%d, playerID=%s, competitionID=%s, score=%d, rowNum=%d, createdAt=%d, updatedAt=%d, %w",
-				ps.ID, ps.TenantID, ps.PlayerID, ps.CompetitionID, ps.Score, ps.RowNum, ps.CreatedAt, ps.UpdatedAt, err,
-			)
 
-		}
+	sql := `
+INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at)
+VALUES 
+`
+	scores := []string{}
+	for _, ps := range playerScoreRows {
+		row := "( "
+		row += strings.Join(
+			[]string{
+				"'" + ps.ID + "'", strconv.FormatInt(ps.TenantID, 10),
+				"'" + ps.PlayerID + "'", "'" + ps.CompetitionID + "'",
+				strconv.FormatInt(ps.Score, 10), strconv.FormatInt(ps.RowNum, 10),
+				strconv.FormatInt(ps.CreatedAt, 10), strconv.FormatInt(ps.UpdatedAt, 10),
+			},
+			" ,",
+		)
+		row += " )"
+		scores = append(scores, row)
+	}
+	sql += strings.Join(scores, " ,")
+	_, err = tenantDB.ExecContext(ctx, sql)
+	if err != nil {
+		return fmt.Errorf(
+			"error Insert player_score: err %s sql= %s", err, sql,
+		)
 	}
 
 	return c.JSON(http.StatusOK, SuccessResult{
