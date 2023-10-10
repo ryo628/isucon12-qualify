@@ -54,6 +54,7 @@ var (
 	uniqueID int64
 
 	visitHistoryInserted *cache.Cache
+	playerScores         *cache.Cache
 
 	mapTenantLock sync.Map
 )
@@ -1112,6 +1113,9 @@ VALUES
 		)
 		row += " )"
 		scores = append(scores, row)
+
+		key := makePlayerScoreKey(ps.TenantID, ps.PlayerID)
+		playerScores.Delete(key)
 	}
 	sql += strings.Join(scores, " ,")
 	_, err = tenantDB.ExecContext(ctx, sql)
@@ -1236,6 +1240,15 @@ func playerHandler(c echo.Context) error {
 	mu := GetTenantDBMutex(v.tenantID)
 	mu.RLock()
 	defer mu.RUnlock()
+
+	playerScoresKey := makePlayerScoreKey(v.tenantID, playerID)
+	// ロックの後にキャシュを読みにいっておく
+	// playscoreはCSV入稿時に適当にクリアされる
+	cachedRes, found := playerScores.Get(playerScoresKey)
+	if found {
+		return c.JSON(http.StatusOK, cachedRes)
+	}
+
 	pss := make([]PlayerScoreRow, 0, len(cs))
 
 	compIDs := make([]string, 0, len(cs))
@@ -1288,7 +1301,24 @@ func playerHandler(c echo.Context) error {
 			Scores: psds,
 		},
 	}
+
+	playerScores.Set(
+		playerScoresKey,
+		res,
+		cache.NoExpiration,
+	)
+
 	return c.JSON(http.StatusOK, res)
+}
+
+func makePlayerScoreKey(tenantID int64, playerID string) string {
+	playerScoresKey := strings.Join(
+		[]string{
+			strconv.FormatInt(tenantID, 10), playerID,
+		},
+		",",
+	)
+	return playerScoresKey
 }
 
 type CompetitionRank struct {
@@ -1665,6 +1695,7 @@ func initializeHandler(c echo.Context) error {
 		Lang: "go",
 	}
 	visitHistoryInserted = cache.New(5*time.Minute, 10*time.Minute)
+	playerScores = cache.New(5*time.Minute, 10*time.Minute)
 	init_visit_history()
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }
