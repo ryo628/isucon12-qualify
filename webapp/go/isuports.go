@@ -125,10 +125,6 @@ func Run() {
 
 	echopprof.Wrap(e)
 
-	// Create a cache with a default expiration time of 5 minutes, and which
-	// purges expired items every 10 minutes
-	gocache = cache.New(5*time.Minute, 10*time.Minute)
-
 	var (
 		sqlLogger io.Closer
 		err       error
@@ -1651,6 +1647,7 @@ func initializeHandler(c echo.Context) error {
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
+	gocache = cache.New(5*time.Minute, 10*time.Minute)
 	init_visit_history()
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }
