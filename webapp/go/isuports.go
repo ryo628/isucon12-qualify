@@ -27,6 +27,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/patrickmn/go-cache"
+	echopprof "github.com/plainbanana/echo-pprof"
 )
 
 const (
@@ -49,6 +51,7 @@ var (
 	sqliteDriverName = "sqlite3"
 	mapTenantLock    sync.Map
 	uniqueID         int64
+	playerCache      *cache.Cache
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -136,6 +139,11 @@ func Run() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(SetCacheControlPrivate)
+
+	echopprof.Wrap(e)
+
+	playerCache = cache.New(5*time.Minute, 10*time.Minute)
+	playerCache.Flush()
 
 	// SaaS管理者向けAPI
 	e.POST("/api/admin/tenants/add", tenantsAddHandler)
@@ -352,8 +360,14 @@ type PlayerRow struct {
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
 	var p PlayerRow
-	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
-		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
+	if got, found := playerCache.Get(id); found {
+		g := got.(PlayerRow)
+		return &g, nil
+	} else {
+		if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
+			return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
+		}
+		playerCache.Set(id, p, cache.NoExpiration)
 	}
 	return &p, nil
 }
@@ -826,6 +840,7 @@ func playerDisqualifiedHandler(c echo.Context) error {
 			true, now, playerID, err,
 		)
 	}
+	playerCache.Delete(playerID)
 	p, err := retrievePlayer(ctx, tenantDB, playerID)
 	if err != nil {
 		// 存在しないプレイヤー
