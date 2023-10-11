@@ -56,6 +56,8 @@ var (
 	visitHistoryInserted *cache.Cache
 	playerScores         *cache.Cache
 
+	rankings *cache.Cache
+
 	mapTenantLock sync.Map
 )
 
@@ -1141,6 +1143,9 @@ VALUES
 		)
 	}
 
+	// 大会のスコアは即時反映させるためにキャッシュを削除する
+	rankings.Delete(makeRankingsKey(v, competitionID))
+
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
 		Data:   ScoreHandlerResult{Rows: int64(len(playerScoreRows))},
@@ -1450,6 +1455,23 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 	}
 
+	if ranksRaw, found := rankings.Get(makeRankingsKey(v, competitionID)); found {
+		pagedRanks := limitRanksByRankAfter(ranksRaw.([]CompetitionRank), rankAfter)
+
+		res := SuccessResult{
+			Status: true,
+			Data: CompetitionRankingHandlerResult{
+				Competition: CompetitionDetail{
+					ID:         competition.ID,
+					Title:      competition.Title,
+					IsFinished: competition.FinishedAt.Valid,
+				},
+				Ranks: pagedRanks,
+			},
+		}
+		return c.JSON(http.StatusOK, res)
+	}
+
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	mu := GetTenantDBMutex(v.tenantID)
 	mu.RLock()
@@ -1516,6 +1538,25 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 		return ranks[i].Score > ranks[j].Score
 	})
+	pagedRanks := limitRanksByRankAfter(ranks, rankAfter)
+
+	res := SuccessResult{
+		Status: true,
+		Data: CompetitionRankingHandlerResult{
+			Competition: CompetitionDetail{
+				ID:         competition.ID,
+				Title:      competition.Title,
+				IsFinished: competition.FinishedAt.Valid,
+			},
+			Ranks: pagedRanks,
+		},
+	}
+	rankings.SetDefault(makeRankingsKey(v, competitionID), ranks)
+
+	return c.JSON(http.StatusOK, res)
+}
+
+func limitRanksByRankAfter(ranks []CompetitionRank, rankAfter int64) []CompetitionRank {
 	pagedRanks := make([]CompetitionRank, 0, 100)
 	for i, rank := range ranks {
 		if int64(i) < rankAfter {
@@ -1531,19 +1572,11 @@ func competitionRankingHandler(c echo.Context) error {
 			break
 		}
 	}
+	return pagedRanks
+}
 
-	res := SuccessResult{
-		Status: true,
-		Data: CompetitionRankingHandlerResult{
-			Competition: CompetitionDetail{
-				ID:         competition.ID,
-				Title:      competition.Title,
-				IsFinished: competition.FinishedAt.Valid,
-			},
-			Ranks: pagedRanks,
-		},
-	}
-	return c.JSON(http.StatusOK, res)
+func makeRankingsKey(v *Viewer, competitionID string) string {
+	return strings.Join([]string{strconv.FormatInt(v.tenantID, 10), competitionID}, ",")
 }
 
 type CompetitionsHandlerResult struct {
@@ -1733,6 +1766,9 @@ func initializeHandler(c echo.Context) error {
 	}
 	visitHistoryInserted = cache.New(5*time.Minute, 10*time.Minute)
 	playerScores = cache.New(5*time.Minute, 10*time.Minute)
+	// 三秒の猶予が許されるハンドラで使う
+	//　c.f.　https://gist.github.com/mackee/4320c18919c8f6f1867849378a17e651#%E5%8F%8D%E6%98%A0%E3%81%BE%E3%81%A7%E3%81%AE%E7%8C%B6%E4%BA%88%E6%99%82%E9%96%93%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6
+	rankings = cache.New(3*time.Second, 10*time.Minute)
 	init_visit_history()
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }
