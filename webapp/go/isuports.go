@@ -1222,30 +1222,38 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
 
+	compIDs := make([]string, 0, len(cs))
+	for _, v := range cs {
+		compIDs = append(compIDs, v.ID)
+	}
+	pss := make([]PlayerScoreRow, 0, len(cs))
+	// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
+	query := `SELECT
+		id,
+		tenant_id,
+		player_id,
+		competition_id,
+		score,
+		MAX(row_num) AS row_num,
+		created_at,
+		updated_at
+	FROM player_score
+	WHERE
+		tenant_id = ?
+		AND competition_id IN("`
+	query += strings.Join(compIDs, "\",\"")
+	query += `")
+		AND player_id = ?
+	GROUP BY competition_id
+	ORDER BY row_num DESC`
+
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	lock := GetTenantDBMutex(v.tenantID)
 	lock.RLock()
-	defer lock.RUnlock()
-	pss := make([]PlayerScoreRow, 0, len(cs))
-	for _, c := range cs {
-		ps := PlayerScoreRow{}
-		if err := tenantDB.GetContext(
-			ctx,
-			&ps,
-			// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-			"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
-			v.tenantID,
-			c.ID,
-			p.ID,
-		); err != nil {
-			// 行がない = スコアが記録されてない
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
-		}
-		pss = append(pss, ps)
+	if err := tenantDB.SelectContext(ctx, &pss, query, v.tenantID, p.ID); err != nil {
+		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, p.ID, err)
 	}
+	lock.RUnlock()
 
 	psds := make([]PlayerScoreDetail, 0, len(pss))
 	for _, ps := range pss {
