@@ -27,6 +27,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -47,6 +48,8 @@ var (
 	adminDB *sqlx.DB
 
 	sqliteDriverName = "sqlite3"
+
+	redisClient *redis.Client
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -535,6 +538,12 @@ type VisitHistoryRow struct {
 	CreatedAt     int64  `db:"created_at"`
 	UpdatedAt     int64  `db:"updated_at"`
 }
+type VisitHistoryRow2 struct {
+	PlayerID      string `db:"player_id"`
+	TenantID      int64  `db:"tenant_id"`
+	CompetitionID string `db:"competition_id"`
+	CreatedAt     int64  `db:"created_at"`
+}
 
 type VisitHistorySummaryRow struct {
 	PlayerID     string `db:"player_id"`
@@ -550,15 +559,28 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 
 	// ランキングにアクセスした参加者のIDを取得する
 	vhs := []VisitHistorySummaryRow{}
-	if err := adminDB.SelectContext(
-		ctx,
-		&vhs,
-		"SELECT player_id, MIN(created_at) AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ? GROUP BY player_id",
-		tenantID,
-		comp.ID,
-	); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error Select visit_history: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
+
+	vals, err := redisClient.HGetAll(ctx, strconv.FormatInt(tenantID, 10)+"/"+comp.ID).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis HMGet error: %s", err)
 	}
+	for key, val := range vals {
+		minCreatedAt, _ := strconv.ParseInt(val, 10, 64)
+		vhs = append(vhs, VisitHistorySummaryRow{
+			PlayerID:     key,
+			MinCreatedAt: minCreatedAt,
+		})
+	}
+
+	// if err := adminDB.SelectContext(
+	// 	ctx,
+	// 	&vhs,
+	// 	"SELECT player_id, created_at AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ? LIMIT 1",
+	// 	tenantID,
+	// 	comp.ID,
+	// ); err != nil && err != sql.ErrNoRows {
+	// 	return nil, fmt.Errorf("error Select visit_history: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
+	// }
 	billingMap := map[string]string{}
 	for _, vh := range vhs {
 		// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
@@ -1344,16 +1366,24 @@ func competitionRankingHandler(c echo.Context) error {
 		return fmt.Errorf("error Select tenant: id=%d, %w", v.tenantID, err)
 	}
 
-	if _, err := adminDB.ExecContext(
-		ctx,
-		"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-		v.playerID, tenant.ID, competitionID, now, now,
-	); err != nil {
+	err = redisClient.HSetNX(ctx, strconv.FormatInt(tenant.ID, 10)+"/"+competitionID, v.playerID, now).Err()
+	if err != nil {
 		return fmt.Errorf(
 			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
 			v.playerID, tenant.ID, competitionID, now, now, err,
 		)
 	}
+
+	// if _, err := adminDB.ExecContext(
+	// 	ctx,
+	// 	"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+	// 	v.playerID, tenant.ID, competitionID, now, now,
+	// ); err != nil {
+	// 	return fmt.Errorf(
+	// 		"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
+	// 		v.playerID, tenant.ID, competitionID, now, now, err,
+	// 	)
+	// }
 
 	var rankAfter int64
 	rankAfterStr := c.QueryParam("rank_after")
@@ -1617,6 +1647,30 @@ func initializeHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
+
+	redisClient = redis.NewClient(&redis.Options{
+		Addr:     "redis:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
+	ctx := context.Background()
+	vhs := []VisitHistoryRow2{}
+	if err := adminDB.SelectContext(
+		ctx,
+		&vhs,
+		"SELECT player_id, MIN(created_at) as created_at, tenant_id, competition_id FROM visit_history group by tenant_id, competition_id, player_id",
+	); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("error Select visit_history: %w", err)
+	}
+	for _, vh := range vhs {
+		if err != nil {
+			redisClient.HSet(ctx, strconv.FormatInt(vh.TenantID, 10)+"/"+vh.CompetitionID, map[string]interface{}{
+				vh.PlayerID: vh.CreatedAt,
+			})
+		}
+	}
+
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
