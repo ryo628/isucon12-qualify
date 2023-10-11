@@ -125,7 +125,7 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 func Run() {
 	e := echo.New()
 	e.Debug = false
-	e.Logger.SetLevel(log.WARN)
+	e.Logger.SetLevel(log.INFO)
 
 	echopprof.Wrap(e)
 
@@ -412,6 +412,11 @@ type PlayerScoreRow struct {
 	RowNum        int64  `db:"row_num"`
 	CreatedAt     int64  `db:"created_at"`
 	UpdatedAt     int64  `db:"updated_at"`
+}
+
+type PlayerScoreRow2 struct {
+	CompetitionID string `db:"competition_id"`
+	Score         int64  `db:"score"`
 }
 
 // 排他ロックのためのファイル名を生成する
@@ -1087,6 +1092,16 @@ func competitionScoreHandler(c echo.Context) error {
 		})
 	}
 
+	playerScoreRowsMap := map[string]PlayerScoreRow{}
+	for i, v := range playerScoreRows {
+		playerScoreRowsMap[v.PlayerID] = playerScoreRows[i]
+	}
+	playerScoreRowsSmall := []PlayerScoreRow{}
+	for k, _ := range playerScoreRowsMap {
+		playerScoreRowsSmall = append(playerScoreRowsSmall, playerScoreRowsMap[k])
+	}
+	// c.Logger().Infof("CSV %d %d %d %s", len(playerScoreRows), len(playerScoreRowsSmall), v.tenantID, competitionID)
+
 	if _, err := tenantDB.ExecContext(
 		ctx,
 		"DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
@@ -1101,7 +1116,7 @@ INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_n
 VALUES 
 `
 	scores := []string{}
-	for _, ps := range playerScoreRows {
+	for _, ps := range playerScoreRowsSmall {
 		row := "( "
 		row += strings.Join(
 			[]string{
@@ -1250,22 +1265,18 @@ func playerHandler(c echo.Context) error {
 		return c.JSON(http.StatusOK, cachedRes)
 	}
 
-	pss := make([]PlayerScoreRow, 0, len(cs))
+	pss := make([]PlayerScoreRow2, 0, len(cs))
 
 	compIDs := make([]string, 0, len(cs))
 	for _, v := range cs {
 		compIDs = append(compIDs, v.ID)
 	}
 
+	// XXX: 初期データの内容によってはMAX(row_num)がないとエラーが起きる気がするが放置
+	//　同一テナント、同一大会、同一playerで複数スコアが登録されたままだと駄目なはず
 	query := `SELECT
-		id,
-		tenant_id,
-		player_id,
 		competition_id,
-		score,
-		MAX(row_num) AS row_num,
-		created_at,
-		updated_at
+		score
 	FROM player_score
 	WHERE
 		tenant_id = ?
@@ -1273,8 +1284,7 @@ func playerHandler(c echo.Context) error {
 	query += strings.Join(compIDs, "\",\"")
 	query += `")
 		AND player_id = ?
-	GROUP BY competition_id
-	ORDER BY row_num DESC`
+	`
 	if err := tenantDB.SelectContext(ctx, &pss, query, v.tenantID, p.ID); err != nil {
 		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, p.ID, err)
 	}
