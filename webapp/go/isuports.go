@@ -1466,6 +1466,25 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 	ranks := make([]CompetitionRank, 0, len(pss))
 	scoredPlayerSet := make(map[string]struct{}, len(pss))
+
+	scoredPlayerSet2 := make(map[string]struct{}, len(pss))
+	playerIDs := []string{}
+	for _, ps := range pss {
+		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
+		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
+		if _, ok := scoredPlayerSet2[ps.PlayerID]; ok {
+			continue
+		}
+		scoredPlayerSet2[ps.PlayerID] = struct{}{}
+
+		playerIDs = append(playerIDs, "\""+ps.PlayerID+"\"")
+	}
+	pp := []PlayerRow{}
+	sqlStr := "SELECT * FROM player WHERE id IN ( "
+	sqlStr += strings.Join(playerIDs, ",")
+	sqlStr += " )"
+	tenantDB.SelectContext(ctx, &pp, sqlStr)
+
 	for _, ps := range pss {
 		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
 		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
@@ -1473,14 +1492,21 @@ func competitionRankingHandler(c echo.Context) error {
 			continue
 		}
 		scoredPlayerSet[ps.PlayerID] = struct{}{}
-		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
+
+		var playerID string
+		var PlayerDisplayName string
+		for _, v := range pp {
+			if ps.PlayerID == v.ID {
+				playerID = v.ID
+				PlayerDisplayName = v.DisplayName
+				break
+			}
 		}
+
 		ranks = append(ranks, CompetitionRank{
 			Score:             ps.Score,
-			PlayerID:          p.ID,
-			PlayerDisplayName: p.DisplayName,
+			PlayerID:          playerID,
+			PlayerDisplayName: PlayerDisplayName,
 			RowNum:            ps.RowNum,
 		})
 	}
