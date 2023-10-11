@@ -23,11 +23,14 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+
 	"github.com/labstack/gommon/log"
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"github.com/redis/go-redis/v9"
+
+	echopprof "github.com/plainbanana/echo-pprof"
 )
 
 const (
@@ -143,6 +146,7 @@ func Run() {
 	e := echo.New()
 	e.Debug = true
 	e.Logger.SetLevel(log.DEBUG)
+	echopprof.Wrap(e)
 
 	var (
 		sqlLogger io.Closer
