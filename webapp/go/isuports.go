@@ -58,6 +58,8 @@ var (
 
 	rankings *cache.Cache
 
+	billingReportsByCompetition *cache.Cache
+
 	mapTenantLock sync.Map
 )
 
@@ -539,6 +541,12 @@ type VisitHistorySummaryRow struct {
 
 // 大会ごとの課金レポートを計算する
 func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, competitonID string) (*BillingReport, error) {
+	cacheKey := strings.Join([]string{strconv.FormatInt(tenantID, 10), competitonID}, ",")
+	if resRaw, found := billingReportsByCompetition.Get(cacheKey); found {
+		res := resRaw.(BillingReport)
+		return &res, nil
+	}
+
 	comp, err := retrieveCompetition(ctx, tenantDB, competitonID)
 	if err != nil {
 		return nil, fmt.Errorf("error retrieveCompetition: %w", err)
@@ -596,7 +604,8 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 			}
 		}
 	}
-	return &BillingReport{
+
+	res := BillingReport{
 		CompetitionID:     comp.ID,
 		CompetitionTitle:  comp.Title,
 		PlayerCount:       playerCount,
@@ -604,7 +613,10 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		BillingPlayerYen:  100 * playerCount, // スコアを登録した参加者は100円
 		BillingVisitorYen: 10 * visitorCount, // ランキングを閲覧だけした(スコアを登録していない)参加者は10円
 		BillingYen:        100*playerCount + 10*visitorCount,
-	}, nil
+	}
+
+	billingReportsByCompetition.SetDefault(cacheKey, res)
+	return &res, nil
 }
 
 type TenantWithBilling struct {
@@ -685,6 +697,7 @@ func tenantsBillingHandler(c echo.Context) error {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
 			for _, comp := range cs {
+				// TODO: N+1 がおもたい
 				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, comp.ID)
 				if err != nil {
 					return fmt.Errorf("failed to billingReportByCompetition: %w", err)
@@ -1769,6 +1782,7 @@ func initializeHandler(c echo.Context) error {
 	// 三秒の猶予が許されるハンドラで使う
 	//　c.f.　https://gist.github.com/mackee/4320c18919c8f6f1867849378a17e651#%E5%8F%8D%E6%98%A0%E3%81%BE%E3%81%A7%E3%81%AE%E7%8C%B6%E4%BA%88%E6%99%82%E9%96%93%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6
 	rankings = cache.New(3*time.Second, 10*time.Minute)
+	billingReportsByCompetition = cache.New(3*time.Second, 10*time.Minute)
 	init_visit_history()
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }
