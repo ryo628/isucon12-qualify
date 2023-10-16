@@ -1158,7 +1158,6 @@ func competitionScoreHandler(c echo.Context) error {
 		return fmt.Errorf(
 			"error Insert player_score: %w", err,
 		)
-
 	}
 
 	return c.JSON(http.StatusOK, SuccessResult{
@@ -1293,21 +1292,13 @@ func playerHandler(c echo.Context) error {
 		player_score.created_at as created_at,
 		player_score.updated_at as updated_at                   
 	FROM 
-			(
-					SELECT 
-							competition_id as competition_id, MAX(row_num) as max_row_num
-					FROM
-							player_score
-					WHERE 
-							tenant_id = ?
-					AND 
-							player_id = ?
-					GROUP BY
-							competition_id
-			) as max INNER JOIN player_score
-			ON max.max_row_num = player_score.row_num AND max.competition_id = player_score.competition_id
-	WHERE
-		player_score.competition_id IN ( ` + strings.Join(in, ",") + ` )`
+		player_score
+	WHERE 
+				tenant_id = ?
+		AND 
+				player_id = ?
+		AND
+			player_score.competition_id IN ( ` + strings.Join(in, ",") + ` )`
 	if err := tenantDB.SelectContext(
 		ctx,
 		&pss,
