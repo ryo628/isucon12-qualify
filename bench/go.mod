@@ -15,7 +15,9 @@ require (
 )
 
 require (
+	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dsnet/compress v0.0.1 // indirect
 	github.com/go-sql-driver/mysql v1.6.0 // indirect
 	github.com/goccy/go-json v0.9.7 // indirect
@@ -37,6 +39,7 @@ require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/plainbanana/echo-pprof v0.2.0 // indirect
 	github.com/pquerna/cachecontrol v0.1.0 // indirect
+	github.com/redis/go-redis/v9 v9.2.1 // indirect
 	github.com/samber/lo v1.21.0 // indirect
 	github.com/shogo82148/go-sql-proxy v0.6.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect

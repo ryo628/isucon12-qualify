@@ -25,11 +25,13 @@ services:
       - "3000:3000"
     links:
       - mysql
+      - redis
     volumes:
       - ./webapp:/home/isucon/webapp
       - ./tenant_db:/home/isucon/webapp/tenant_db
       - ./initial_data:/home/isucon/initial_data
       - ./gopkg:/home/isucon/go/pkg
+      - ./redis:/home/isucon/redis
     init: true
     restart: always
 
@@ -87,6 +89,13 @@ services:
       - -c
       - |
         perl -e 'sub sigexit { exit 0 }; $$SIG{"TERM"} = "sigexit"; while () { sleep 1 }'
+
+  redis:
+    image: "redis:latest"
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis:/data
 
 volumes:
   mysql:

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/patrickmn/go-cache"
 	echopprof "github.com/plainbanana/echo-pprof"
+	"github.com/redis/go-redis/v9"
 	"io"
 	"net/http"
 	"os"
@@ -48,6 +49,8 @@ var (
 	tenantNameRegexp = regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
 
 	adminDB *sqlx.DB
+
+	redis_db *redis.Client
 
 	sqliteDriverName = "sqlite3"
 
@@ -189,6 +192,12 @@ func Run() {
 	adminDB.SetMaxOpenConns(10)
 	defer adminDB.Close()
 
+	redis_db = redis.NewClient(&redis.Options{
+		Addr:     "redis:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
 	port := getEnv("SERVER_APP_PORT", "3000")
 	e.Logger.Infof("starting isuports server on : %s ...", port)
 	serverPort := fmt.Sprintf(":%s", port)
@@ -226,6 +235,10 @@ type Viewer struct {
 	playerID   string
 	tenantName string
 	tenantID   int64
+}
+
+func makePlayerScoreKeyRedis(tenantId int64, compId string, playerId string) string {
+	return fmt.Sprintf("%d,%s,%s", tenantId, compId, playerId)
 }
 
 // リクエストヘッダをパースしてViewerを返す
@@ -1126,12 +1139,20 @@ func competitionScoreHandler(c echo.Context) error {
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
 
+	redisData := []interface{}{}
+
 	sql := `
 INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at)
 VALUES 
 `
 	scores := []string{}
 	for _, ps := range playerScoreRowsSmall {
+		{
+			key := makePlayerScoreKeyRedis(ps.TenantID, ps.CompetitionID, ps.PlayerID)
+			redisData = append(redisData, key)
+			redisData = append(redisData, ps.Score)
+		}
+
 		row := "( "
 		row += strings.Join(
 			[]string{
@@ -1155,6 +1176,8 @@ VALUES
 			"error Insert player_score: err %s sql= %s", err, sql,
 		)
 	}
+
+	redis_db.MSet(ctx, redisData...)
 
 	// 大会のスコアは即時反映させるためにキャッシュを削除する
 	rankings.Delete(makeRankingsKey(v, competitionID))
@@ -1285,26 +1308,32 @@ func playerHandler(c echo.Context) error {
 
 	pss := make([]PlayerScoreRow2, 0, len(cs))
 
+	redisKeys := make([]string, 0, len(cs))
 	compIDs := make([]string, 0, len(cs))
 	for _, v := range cs {
 		compIDs = append(compIDs, v.ID)
+		redisKeys = append(redisKeys, makePlayerScoreKeyRedis(v.TenantID, v.ID, playerID))
 	}
 
-	// XXX: 初期データの内容によってはMAX(row_num)がないとエラーが起きる気がするが放置
-	//　同一テナント、同一大会、同一playerで複数スコアが登録されたままだと駄目なはず
-	query := `SELECT
-		competition_id,
-		score
-	FROM player_score
-	WHERE
-		tenant_id = ?
-		AND competition_id IN("`
-	query += strings.Join(compIDs, "\",\"")
-	query += `")
-		AND player_id = ?
-	`
-	if err := tenantDB.SelectContext(ctx, &pss, query, v.tenantID, p.ID); err != nil {
-		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, p.ID, err)
+	redisGot := redis_db.MGet(ctx, redisKeys...)
+	if redisGot.Err() != nil {
+		// XXX: リトライが必要
+		c.Logger().Info(redisGot.Err())
+	}
+	result, _ := redisGot.Result()
+	for i, v := range result {
+		if v == nil {
+			continue
+		}
+
+		ps := PlayerScoreRow2{}
+
+		ps.CompetitionID = compIDs[i]
+
+		convertedStrInt64, _ := strconv.ParseInt(v.(string), 10, 64)
+		ps.Score = convertedStrInt64
+
+		pss = append(pss, ps)
 	}
 
 	psds := make([]PlayerScoreDetail, 0, len(pss))
