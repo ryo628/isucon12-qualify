@@ -1267,24 +1267,45 @@ func playerHandler(c echo.Context) error {
 	}
 	defer fl.Close()
 	pss := make([]PlayerScoreRow, 0, len(cs))
-	for _, c := range cs {
-		ps := PlayerScoreRow{}
-		if err := tenantDB.GetContext(
-			ctx,
-			&ps,
-			// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-			"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
-			v.tenantID,
-			c.ID,
-			p.ID,
-		); err != nil {
-			// 行がない = スコアが記録されてない
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
-		}
-		pss = append(pss, ps)
+	var in []string
+	for i := 0; i < len(cs); i++ {
+		in = append(in, "\""+cs[i].ID+"\"")
+	}
+	sql := `SELECT 
+		player_score.tenant_id as tenant_id,
+		player_score.id as id,
+		player_score.player_id as player_id,
+		player_score.competition_id as competition_id,
+		player_score.score as score,
+		player_score.row_num as row_num,
+		player_score.created_at as created_at,
+		player_score.updated_at as updated_at                   
+	FROM 
+			(
+					SELECT 
+							competition_id as competition_id, MAX(row_num) as max_row_num
+					FROM
+							player_score
+					WHERE 
+							tenant_id = ?
+					AND 
+							player_id = ?
+					GROUP BY
+							competition_id
+			) as max INNER JOIN player_score
+			ON max.max_row_num = player_score.row_num AND max.competition_id = player_score.competition_id
+	WHERE
+		player_score.competition_id IN ( ` + strings.Join(in, ",") + ` )`
+	if err := tenantDB.SelectContext(
+		ctx,
+		&pss,
+		// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
+		sql,
+		v.tenantID,
+		p.ID,
+	); err != nil {
+		// 行がない = スコアが記録されてない
+		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w, %s", v.tenantID, p.ID, err, sql)
 	}
 
 	psds := make([]PlayerScoreDetail, 0, len(pss))
