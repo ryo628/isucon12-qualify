@@ -1081,6 +1081,7 @@ func competitionScoreHandler(c echo.Context) error {
 	defer fl.Close()
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
+	psrcache := make(map[string]PlayerScoreRow)
 	for {
 		rowNum++
 		row, err := r.Read()
@@ -1116,7 +1117,7 @@ func competitionScoreHandler(c echo.Context) error {
 			return fmt.Errorf("error dispenseID: %w", err)
 		}
 		now := time.Now().Unix()
-		playerScoreRows = append(playerScoreRows, PlayerScoreRow{
+		psrcache[playerID] = PlayerScoreRow{
 			ID:            id,
 			TenantID:      v.tenantID,
 			PlayerID:      playerID,
@@ -1125,7 +1126,20 @@ func competitionScoreHandler(c echo.Context) error {
 			RowNum:        rowNum,
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		})
+		}
+		// playerScoreRows = append(playerScoreRows, PlayerScoreRow{
+		// 	ID:            id,
+		// 	TenantID:      v.tenantID,
+		// 	PlayerID:      playerID,
+		// 	CompetitionID: competitionID,
+		// 	Score:         score,
+		// 	RowNum:        rowNum,
+		// 	CreatedAt:     now,
+		// 	UpdatedAt:     now,
+		// })
+	}
+	for _, pscore := range psrcache {
+		playerScoreRows = append(playerScoreRows, pscore)
 	}
 
 	if _, err := tenantDB.ExecContext(
@@ -1136,7 +1150,6 @@ func competitionScoreHandler(c echo.Context) error {
 	); err != nil {
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
-	// for _, ps := range playerScoreRows {
 	if _, err := tenantDB.NamedExecContext(
 		ctx,
 		`INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)`,
@@ -1147,11 +1160,10 @@ func competitionScoreHandler(c echo.Context) error {
 		)
 
 	}
-	// }
 
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
-		Data:   ScoreHandlerResult{Rows: int64(len(playerScoreRows))},
+		Data:   ScoreHandlerResult{Rows: rowNum - 1},
 	})
 }
 
