@@ -23,6 +23,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/patrickmn/go-cache"
 
 	"github.com/labstack/gommon/log"
 	"github.com/lestrrat-go/jwx/v2/jwa"
@@ -51,8 +52,8 @@ var (
 	adminDB *sqlx.DB
 
 	sqliteDriverName = "sqlite3"
-
-	redisClient *redis.Client
+	gocache          = cache.New(5*time.Minute, 10*time.Minute)
+	redisClient      *redis.Client
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -380,10 +381,18 @@ type PlayerRow struct {
 
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
+	playerInterface, found := gocache.Get(id)
+	if found {
+		foundplayer := playerInterface.(PlayerRow)
+		return &foundplayer, nil
+	}
+
 	var p PlayerRow
 	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
 	}
+	gocache.Set(id, p, time.Minute*1)
+
 	return &p, nil
 }
 
@@ -891,6 +900,8 @@ func playerDisqualifiedHandler(c echo.Context) error {
 			true, now, playerID, err,
 		)
 	}
+	gocache.Delete(playerID)
+
 	p, err := retrievePlayer(ctx, tenantDB, playerID)
 	if err != nil {
 		// 存在しないプレイヤー
