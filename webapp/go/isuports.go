@@ -241,6 +241,10 @@ func makePlayerScoreKeyRedis(tenantId int64, compId string, playerId string) str
 	return fmt.Sprintf("%d,%s,%s", tenantId, compId, playerId)
 }
 
+func makePlayerWithTimeseriesKeyRedis(tenantId int64, compId string) string {
+	return fmt.Sprintf("%d,%s", tenantId, compId)
+}
+
 // リクエストヘッダをパースしてViewerを返す
 func parseViewer(c echo.Context) (*Viewer, error) {
 	cookie, err := c.Request().Cookie(cookieName)
@@ -591,18 +595,15 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	defer mu.RUnlock()
 
 	// スコアを登録した参加者のIDを取得する
-	scoredPlayerIDs := []string{}
-	if err := tenantDB.SelectContext(
-		ctx,
-		&scoredPlayerIDs,
-		"SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
-		tenantID, comp.ID,
-	); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, competitonID, err)
+	key := makePlayerWithTimeseriesKeyRedis(tenantID, comp.ID)
+	redisKeyRes := redis_db.ZRange(ctx, key, 0, -1)
+	if redisKeyRes.Err() != nil {
+		// XXX: リトライが必要
 	}
-	for _, pid := range scoredPlayerIDs {
+	keysStr, _ := redisKeyRes.Result()
+	for i, _ := range keysStr {
 		// スコアが登録されている参加者
-		billingMap[pid] = "player"
+		billingMap[keysStr[i]] = "player"
 	}
 
 	// 大会が終了している場合のみ請求金額が確定するので計算する
@@ -1139,7 +1140,8 @@ func competitionScoreHandler(c echo.Context) error {
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
 
-	redisData := []interface{}{}
+	redisScoreData := []interface{}{}
+	redisPlayerWithRownumData := []redis.Z{}
 
 	sql := `
 INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at)
@@ -1149,8 +1151,13 @@ VALUES
 	for _, ps := range playerScoreRowsSmall {
 		{
 			key := makePlayerScoreKeyRedis(ps.TenantID, ps.CompetitionID, ps.PlayerID)
-			redisData = append(redisData, key)
-			redisData = append(redisData, ps.Score)
+			redisScoreData = append(redisScoreData, key)
+			redisScoreData = append(redisScoreData, ps.Score)
+
+			tmp := redis.Z{}
+			tmp.Score = float64(ps.RowNum)
+			tmp.Member = ps.PlayerID
+			redisPlayerWithRownumData = append(redisPlayerWithRownumData, tmp)
 		}
 
 		row := "( "
@@ -1177,7 +1184,8 @@ VALUES
 		)
 	}
 
-	redis_db.MSet(ctx, redisData...)
+	redis_db.MSet(ctx, redisScoreData...)
+	redis_db.ZAdd(ctx, makePlayerWithTimeseriesKeyRedis(v.tenantID, competitionID), redisPlayerWithRownumData...)
 
 	// 大会のスコアは即時反映させるためにキャッシュを削除する
 	rankings.Delete(makeRankingsKey(v, competitionID))
@@ -1519,6 +1527,7 @@ func competitionRankingHandler(c echo.Context) error {
 	mu.RLock()
 	defer mu.RUnlock()
 	pss := []PlayerScoreRow{}
+	// TODO: Sorted Setsで保管した要素とスコアをかけ合わせて頑張る。MSETで保管しているスコアもMGET比較で取得時のパフォーマンス劣化が問題にならなければ、Sets/Sorted Setsで保管したほうがいいだろう。
 	if err := tenantDB.SelectContext(
 		ctx,
 		&pss,

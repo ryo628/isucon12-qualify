@@ -38,7 +38,11 @@ group by competition_id, tenant_id, player_id
         for row in rows:
             _id, tenant_id, player_id, compe_id, score, row_num, created_at, updated_at = row
 
-            res = redis.set(f"{tenant_id},{compe_id},{player_id}", score)
+            redis.set(f"{tenant_id},{compe_id},{player_id}", score)
+
+            dictData = {player_id: row_num}
+            redis.zadd(f"{tenant_id},{compe_id}", dictData)
+
 
 except sqlite3.Error as e:
     print(f"SQLiteエラー: {e}")
