@@ -48,10 +48,11 @@ var (
 
 	adminDB *sqlx.DB
 
-	sqliteDriverName = "sqlite3"
-	mapTenantLock    sync.Map
-	uniqueID         int64
-	playerCache      *cache.Cache
+	sqliteDriverName  = "sqlite3"
+	mapTenantLock     sync.Map
+	uniqueID          int64
+	playerCache       *cache.Cache
+	visitHistoryCache *cache.Cache
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -144,6 +145,8 @@ func Run() {
 
 	playerCache = cache.New(5*time.Minute, 10*time.Minute)
 	playerCache.Flush()
+	visitHistoryCache = cache.New(5*time.Minute, 10*time.Minute)
+	visitHistoryCache.Flush()
 
 	// SaaS管理者向けAPI
 	e.POST("/api/admin/tenants/add", tenantsAddHandler)
@@ -531,11 +534,11 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	if err := adminDB.SelectContext(
 		ctx,
 		&vhs,
-		"SELECT player_id, MIN(created_at) AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ? GROUP BY player_id",
+		"SELECT player_id, created_at AS min_created_at FROM visit_history_2 WHERE tenant_id = ? AND competition_id = ?",
 		tenantID,
 		comp.ID,
 	); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error Select visit_history: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
+		return nil, fmt.Errorf("error Select visit_history_2: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
 	}
 	billingMap := map[string]string{}
 	for _, vh := range vhs {
@@ -1337,15 +1340,17 @@ func competitionRankingHandler(c echo.Context) error {
 		return fmt.Errorf("error Select tenant: id=%d, %w", v.tenantID, err)
 	}
 
-	if _, err := adminDB.ExecContext(
-		ctx,
-		"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-		v.playerID, tenant.ID, competitionID, now, now,
-	); err != nil {
-		return fmt.Errorf(
-			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
-			v.playerID, tenant.ID, competitionID, now, now, err,
-		)
+	if shouldUpdateVisitHistory(v.playerID, strconv.FormatInt(tenant.ID, 10), competitionID) {
+		if _, err := adminDB.ExecContext(
+			ctx,
+			"INSERT INTO visit_history_2 (player_id, tenant_id, competition_id, created_at) VALUES (?, ?, ?, ?)",
+			v.playerID, tenant.ID, competitionID, now,
+		); err != nil {
+			return fmt.Errorf(
+				"error Insert visit_history_2: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
+				v.playerID, tenant.ID, competitionID, now, now, err,
+			)
+		}
 	}
 
 	var rankAfter int64
@@ -1611,6 +1616,9 @@ func initializeHandler(c echo.Context) error {
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
+
+	init_visit_history()
+
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }
 
@@ -1623,4 +1631,45 @@ func GetTenantDBMutex(id int64) *sync.RWMutex {
 		lock = cached.(sync.RWMutex)
 	}
 	return &lock
+}
+
+func makeVisitHistoryKey(keys []string) string {
+	return strings.Join(keys, ":")
+}
+
+func init_visit_history() {
+	// select player_id, tenant_id, competition_id, min(created_at) as min_created_at
+	// 	from visit_history
+	// 	where created_at < '1654041600'
+	// 	group by player_id, tenant_id, competition_id
+	f, err := os.Open("../../initial_data/init_visit_history.csv")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	r := csv.NewReader(f)
+
+	for {
+		record, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		keys := []string{record[0], record[1], record[2]}
+		// keyが存在するかどうかを格納しておく
+		visitHistoryCache.Set(makeVisitHistoryKey(keys), "1", cache.NoExpiration)
+	}
+}
+
+func shouldUpdateVisitHistory(playerID string, tenantId string, competitionID string) bool {
+	key := makeVisitHistoryKey([]string{playerID, tenantId, competitionID})
+
+	if _, found := visitHistoryCache.Get(key); found {
+		return false
+	} else {
+		visitHistoryCache.Set(key, "1", cache.NoExpiration)
+		return true
+	}
 }
