@@ -53,6 +53,7 @@ var (
 	uniqueID          int64
 	playerCache       *cache.Cache
 	visitHistoryCache *cache.Cache
+	competitionCache  *cache.Cache
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -147,6 +148,8 @@ func Run() {
 	playerCache.Flush()
 	visitHistoryCache = cache.New(5*time.Minute, 10*time.Minute)
 	visitHistoryCache.Flush()
+	competitionCache = cache.New(5*time.Minute, 10*time.Minute)
+	competitionCache.Flush()
 
 	// SaaS管理者向けAPI
 	e.POST("/api/admin/tenants/add", tenantsAddHandler)
@@ -403,8 +406,14 @@ type CompetitionRow struct {
 // 大会を取得する
 func retrieveCompetition(ctx context.Context, tenantDB dbOrTx, id string) (*CompetitionRow, error) {
 	var c CompetitionRow
-	if err := tenantDB.GetContext(ctx, &c, "SELECT * FROM competition WHERE id = ?", id); err != nil {
-		return nil, fmt.Errorf("error Select competition: id=%s, %w", id, err)
+	if got, found := competitionCache.Get(id); found {
+		g := got.(CompetitionRow)
+		return &g, nil
+	} else {
+		if err := tenantDB.GetContext(ctx, &c, "SELECT * FROM competition WHERE id = ?", id); err != nil {
+			return nil, fmt.Errorf("error Select competition: id=%s, %w", id, err)
+		}
+		competitionCache.Set(id, c, cache.NoExpiration)
 	}
 	return &c, nil
 }
@@ -961,6 +970,7 @@ func competitionFinishHandler(c echo.Context) error {
 			now, now, id, err,
 		)
 	}
+	competitionCache.Delete(id)
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
 
