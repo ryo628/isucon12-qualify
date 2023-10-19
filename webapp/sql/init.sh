@@ -19,3 +19,6 @@ mysql -u"$ISUCON_DB_USER" \
 # SQLiteのデータベースを初期化
 rm -f ../tenant_db/*.db
 cp -r ../../initial_data/*.db ../tenant_db/
+
+# index to sqlite
+find ../tenant_db/ -name "*.db" | xargs -IXXX sqlite3 XXX "CREATE INDEX tenant_id_competition_id_idx ON player_score ( tenant_id, competition_id );"

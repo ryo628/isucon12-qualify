@@ -3,6 +3,7 @@ module github.com/isucon/isucon12-qualify/bench
 go 1.18
 
 require (
+	github.com/Songmu/go-httpdate v1.0.0
 	github.com/google/go-cmp v0.5.8
 	github.com/isucon/isucandar v0.0.0-20220322062028-6dd56dc57d72
 	github.com/isucon/isucon12-portal v0.0.0-00010101000000-000000000000
@@ -14,7 +15,6 @@ require (
 )
 
 require (
-	github.com/Songmu/go-httpdate v1.0.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/dsnet/compress v0.0.1 // indirect
 	github.com/go-sql-driver/mysql v1.6.0 // indirect
@@ -34,6 +34,8 @@ require (
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
 	github.com/mattn/go-sqlite3 v1.14.13 // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
+	github.com/plainbanana/echo-pprof v0.2.0 // indirect
 	github.com/pquerna/cachecontrol v0.1.0 // indirect
 	github.com/samber/lo v1.21.0 // indirect
 	github.com/shogo82148/go-sql-proxy v0.6.1 // indirect

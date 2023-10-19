@@ -21,17 +21,19 @@ services:
       ISUCON_DB_PASSWORD: isucon
       ISUCON_DB_NAME: isuports
       ISUCON_ADMIN_HOSTNAME: admin.t.isucon.dev
+      ISUCON_SQLITE_TRACE_FILE: /home/isucon/sqlite.log
     ports:
       - "3000:3000"
     links:
       - mysql
     volumes:
       - ./webapp:/home/isucon/webapp
-      - tenant_db:/home/isucon/webapp/tenant_db
-      - initial_data:/home/isucon/initial_data
-      - gopkg:/home/isucon/go/pkg
+      - .docker/tenant_db:/home/isucon/webapp/tenant_db
+      - .docker/initial_data:/home/isucon/initial_data
+      - .docker/gopkg:/home/isucon/go/pkg
     init: true
     restart: always
+    user: root
 
   mysql:
     image: mysql/mysql-server:8.0.31
@@ -40,7 +42,7 @@ services:
       - "MYSQL_ROOT_PASSWORD=root"
     volumes:
       - ./webapp/sql/admin/:/docker-entrypoint-initdb.d
-      - mysql:/var/lib/mysql
+      - .docker/mysql:/var/lib/mysql
     ports:
       - 13306:3306
     restart: always
@@ -67,9 +69,9 @@ services:
       ISUCON_JWT_KEY_FILE: ./isuports.pem
     volumes:
       - .:/home/isucon
-      - tenant_db:/home/isucon/webapp/tenant_db
-      - initial_data:/home/isucon/initial_data
-      - gopkg:/home/isucon/go/pkg
+      - .docker/tenant_db:/home/isucon/webapp/tenant_db
+      - .docker/initial_data:/home/isucon/initial_data
+      - .docker/gopkg:/home/isucon/go/pkg
     network_mode: host
     working_dir: /home/isucon/bench
     command:

@@ -22,7 +22,8 @@ func initializeSQLLogger() (string, io.Closer, error) {
 		return "sqlite3", io.NopCloser(nil), nil
 	}
 
-	traceLogFile, err := os.OpenFile(traceFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	//traceLogFile, err := os.OpenFile(traceFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	traceLogFile, err := os.OpenFile(traceFilePath, os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return "", nil, fmt.Errorf("cannot open ISUCON_SQLITE_TRACE_FILE: %w", err)
 	}
