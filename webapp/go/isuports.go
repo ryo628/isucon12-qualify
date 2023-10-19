@@ -23,10 +23,15 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/patrickmn/go-cache"
+
 	"github.com/labstack/gommon/log"
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/redis/go-redis/v9"
+
+	echopprof "github.com/plainbanana/echo-pprof"
 )
 
 const (
@@ -47,6 +52,8 @@ var (
 	adminDB *sqlx.DB
 
 	sqliteDriverName = "sqlite3"
+	gocache          = cache.New(5*time.Minute, 10*time.Minute)
+	redisClient      *redis.Client
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -97,30 +104,34 @@ func createTenantDB(id int64) error {
 	return nil
 }
 
+var uniqueid = 12345
+
 // システム全体で一意なIDを生成する
 func dispenseID(ctx context.Context) (string, error) {
-	var id int64
-	var lastErr error
-	for i := 0; i < 100; i++ {
-		var ret sql.Result
-		ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
-		if err != nil {
-			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
-				lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-				continue
-			}
-			return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-		}
-		id, err = ret.LastInsertId()
-		if err != nil {
-			return "", fmt.Errorf("error ret.LastInsertId: %w", err)
-		}
-		break
-	}
-	if id != 0 {
-		return fmt.Sprintf("%x", id), nil
-	}
-	return "", lastErr
+	uniqueid++
+	return strconv.Itoa(uniqueid), nil
+	// var id int64
+	// var lastErr error
+	// for i := 0; i < 100; i++ {
+	// 	var ret sql.Result
+	// 	ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
+	// 	if err != nil {
+	// 		if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
+	// 			lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+	// 			continue
+	// 		}
+	// 		return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+	// 	}
+	// 	id, err = ret.LastInsertId()
+	// 	if err != nil {
+	// 		return "", fmt.Errorf("error ret.LastInsertId: %w", err)
+	// 	}
+	// 	break
+	// }
+	// if id != 0 {
+	// 	return fmt.Sprintf("%x", id), nil
+	// }
+	// return "", lastErr
 }
 
 // 全APIにCache-Control: privateを設定する
@@ -136,6 +147,7 @@ func Run() {
 	e := echo.New()
 	e.Debug = true
 	e.Logger.SetLevel(log.DEBUG)
+	echopprof.Wrap(e)
 
 	var (
 		sqlLogger io.Closer
@@ -369,10 +381,18 @@ type PlayerRow struct {
 
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
+	playerInterface, found := gocache.Get(id)
+	if found {
+		foundplayer := playerInterface.(PlayerRow)
+		return &foundplayer, nil
+	}
+
 	var p PlayerRow
 	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
 	}
+	gocache.Set(id, p, time.Minute*1)
+
 	return &p, nil
 }
 
@@ -531,6 +551,12 @@ type VisitHistoryRow struct {
 	CreatedAt     int64  `db:"created_at"`
 	UpdatedAt     int64  `db:"updated_at"`
 }
+type VisitHistoryRow2 struct {
+	PlayerID      string `db:"player_id"`
+	TenantID      int64  `db:"tenant_id"`
+	CompetitionID string `db:"competition_id"`
+	CreatedAt     int64  `db:"created_at"`
+}
 
 type VisitHistorySummaryRow struct {
 	PlayerID     string `db:"player_id"`
@@ -546,15 +572,28 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 
 	// ランキングにアクセスした参加者のIDを取得する
 	vhs := []VisitHistorySummaryRow{}
-	if err := adminDB.SelectContext(
-		ctx,
-		&vhs,
-		"SELECT player_id, MIN(created_at) AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ? GROUP BY player_id",
-		tenantID,
-		comp.ID,
-	); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error Select visit_history: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
+
+	vals, err := redisClient.HGetAll(ctx, strconv.FormatInt(tenantID, 10)+"/"+comp.ID).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis HMGet error: %s", err)
 	}
+	for key, val := range vals {
+		minCreatedAt, _ := strconv.ParseInt(val, 10, 64)
+		vhs = append(vhs, VisitHistorySummaryRow{
+			PlayerID:     key,
+			MinCreatedAt: minCreatedAt,
+		})
+	}
+
+	// if err := adminDB.SelectContext(
+	// 	ctx,
+	// 	&vhs,
+	// 	"SELECT player_id, created_at AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ? LIMIT 1",
+	// 	tenantID,
+	// 	comp.ID,
+	// ); err != nil && err != sql.ErrNoRows {
+	// 	return nil, fmt.Errorf("error Select visit_history: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
+	// }
 	billingMap := map[string]string{}
 	for _, vh := range vhs {
 		// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
@@ -861,6 +900,8 @@ func playerDisqualifiedHandler(c echo.Context) error {
 			true, now, playerID, err,
 		)
 	}
+	gocache.Delete(playerID)
+
 	p, err := retrievePlayer(ctx, tenantDB, playerID)
 	if err != nil {
 		// 存在しないプレイヤー
@@ -1051,6 +1092,7 @@ func competitionScoreHandler(c echo.Context) error {
 	defer fl.Close()
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
+	psrcache := make(map[string]PlayerScoreRow)
 	for {
 		rowNum++
 		row, err := r.Read()
@@ -1086,7 +1128,7 @@ func competitionScoreHandler(c echo.Context) error {
 			return fmt.Errorf("error dispenseID: %w", err)
 		}
 		now := time.Now().Unix()
-		playerScoreRows = append(playerScoreRows, PlayerScoreRow{
+		psrcache[playerID] = PlayerScoreRow{
 			ID:            id,
 			TenantID:      v.tenantID,
 			PlayerID:      playerID,
@@ -1095,7 +1137,20 @@ func competitionScoreHandler(c echo.Context) error {
 			RowNum:        rowNum,
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		})
+		}
+		// playerScoreRows = append(playerScoreRows, PlayerScoreRow{
+		// 	ID:            id,
+		// 	TenantID:      v.tenantID,
+		// 	PlayerID:      playerID,
+		// 	CompetitionID: competitionID,
+		// 	Score:         score,
+		// 	RowNum:        rowNum,
+		// 	CreatedAt:     now,
+		// 	UpdatedAt:     now,
+		// })
+	}
+	for _, pscore := range psrcache {
+		playerScoreRows = append(playerScoreRows, pscore)
 	}
 
 	if _, err := tenantDB.ExecContext(
@@ -1106,23 +1161,19 @@ func competitionScoreHandler(c echo.Context) error {
 	); err != nil {
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
-	for _, ps := range playerScoreRows {
-		if _, err := tenantDB.NamedExecContext(
-			ctx,
-			"INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
-			ps,
-		); err != nil {
-			return fmt.Errorf(
-				"error Insert player_score: id=%s, tenant_id=%d, playerID=%s, competitionID=%s, score=%d, rowNum=%d, createdAt=%d, updatedAt=%d, %w",
-				ps.ID, ps.TenantID, ps.PlayerID, ps.CompetitionID, ps.Score, ps.RowNum, ps.CreatedAt, ps.UpdatedAt, err,
-			)
-
-		}
+	if _, err := tenantDB.NamedExecContext(
+		ctx,
+		`INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)`,
+		playerScoreRows,
+	); err != nil {
+		return fmt.Errorf(
+			"error Insert player_score: %w", err,
+		)
 	}
 
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
-		Data:   ScoreHandlerResult{Rows: int64(len(playerScoreRows))},
+		Data:   ScoreHandlerResult{Rows: rowNum - 1},
 	})
 }
 
@@ -1238,24 +1289,37 @@ func playerHandler(c echo.Context) error {
 	}
 	defer fl.Close()
 	pss := make([]PlayerScoreRow, 0, len(cs))
-	for _, c := range cs {
-		ps := PlayerScoreRow{}
-		if err := tenantDB.GetContext(
-			ctx,
-			&ps,
-			// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-			"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
-			v.tenantID,
-			c.ID,
-			p.ID,
-		); err != nil {
-			// 行がない = スコアが記録されてない
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
-		}
-		pss = append(pss, ps)
+	var in []string
+	for i := 0; i < len(cs); i++ {
+		in = append(in, "\""+cs[i].ID+"\"")
+	}
+	sql := `SELECT 
+		player_score.tenant_id as tenant_id,
+		player_score.id as id,
+		player_score.player_id as player_id,
+		player_score.competition_id as competition_id,
+		player_score.score as score,
+		player_score.row_num as row_num,
+		player_score.created_at as created_at,
+		player_score.updated_at as updated_at                   
+	FROM 
+		player_score
+	WHERE 
+				tenant_id = ?
+		AND 
+				player_id = ?
+		AND
+			player_score.competition_id IN ( ` + strings.Join(in, ",") + ` )`
+	if err := tenantDB.SelectContext(
+		ctx,
+		&pss,
+		// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
+		sql,
+		v.tenantID,
+		p.ID,
+	); err != nil {
+		// 行がない = スコアが記録されてない
+		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w, %s", v.tenantID, p.ID, err, sql)
 	}
 
 	psds := make([]PlayerScoreDetail, 0, len(pss))
@@ -1340,16 +1404,24 @@ func competitionRankingHandler(c echo.Context) error {
 		return fmt.Errorf("error Select tenant: id=%d, %w", v.tenantID, err)
 	}
 
-	if _, err := adminDB.ExecContext(
-		ctx,
-		"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-		v.playerID, tenant.ID, competitionID, now, now,
-	); err != nil {
+	err = redisClient.HSetNX(ctx, strconv.FormatInt(tenant.ID, 10)+"/"+competitionID, v.playerID, now).Err()
+	if err != nil {
 		return fmt.Errorf(
 			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
 			v.playerID, tenant.ID, competitionID, now, now, err,
 		)
 	}
+
+	// if _, err := adminDB.ExecContext(
+	// 	ctx,
+	// 	"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+	// 	v.playerID, tenant.ID, competitionID, now, now,
+	// ); err != nil {
+	// 	return fmt.Errorf(
+	// 		"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
+	// 		v.playerID, tenant.ID, competitionID, now, now, err,
+	// 	)
+	// }
 
 	var rankAfter int64
 	rankAfterStr := c.QueryParam("rank_after")
@@ -1613,6 +1685,30 @@ func initializeHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
+
+	redisClient = redis.NewClient(&redis.Options{
+		Addr:     "redis:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
+	ctx := context.Background()
+	vhs := []VisitHistoryRow2{}
+	if err := adminDB.SelectContext(
+		ctx,
+		&vhs,
+		"SELECT player_id, MIN(created_at) as created_at, tenant_id, competition_id FROM visit_history group by tenant_id, competition_id, player_id",
+	); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("error Select visit_history: %w", err)
+	}
+	for _, vh := range vhs {
+		if err != nil {
+			redisClient.HSet(ctx, strconv.FormatInt(vh.TenantID, 10)+"/"+vh.CompetitionID, map[string]interface{}{
+				vh.PlayerID: vh.CreatedAt,
+			})
+		}
+	}
+
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
